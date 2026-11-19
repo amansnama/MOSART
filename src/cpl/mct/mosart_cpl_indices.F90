@@ -20,6 +20,8 @@ module mosart_cpl_indices
   integer, public :: index_x2r_Flrl_rofdto = 0 ! lnd->rof liquid direct to ocean runoff
   integer, public :: index_x2r_Flrl_rofi   = 0 ! lnd->rof ice runoff forcing from land
   integer, public :: index_x2r_Flrl_irrig  = 0 ! lnd->rof fraction of volr to be removed for irrigation
+  integer, public :: index_x2r_Flrl_no3_runoff  = 0 ! lnd->rof NO3 in surface runoff, including tile drainage
+  integer, public :: index_x2r_Flrl_no3_leached = 0 ! lnd->rof NO3 in subsurface leaching
   integer, public :: nflds_x2r             = 0
 
   ! roff to driver (part of land for now) (optional if ROF is off)
@@ -65,6 +67,8 @@ contains
     index_x2r_Flrl_rofdto = mct_avect_indexra(avtmp,'Flrl_rofdto')
     index_x2r_Flrl_rofi   = mct_avect_indexra(avtmp,'Flrl_rofi')
     index_x2r_Flrl_irrig  = mct_avect_indexra(avtmp,'Flrl_irrig')
+    index_x2r_Flrl_no3_runoff  = mct_avect_indexra(avtmp,'Flrl_no3_runoff')
+    index_x2r_Flrl_no3_leached = mct_avect_indexra(avtmp,'Flrl_no3_leached')
 
     nflds_x2r = mct_avect_nRattr(avtmp)
 

@@ -37,6 +37,23 @@
     </desc>
   </entry>
 
+  <entry id="no3numeric_option">
+    <type>char</type>
+    <category>mosart</category>
+    <group>mosart_inparm</group>
+    <valid_values>sameasQ</valid_values>
+    <values>
+      <value>sameasQ</value>
+    </values>
+    <desc>
+      How nitrate moves with the river. sameasQ carries dissolved NO3 at the
+      local water concentration, using the same kinematic-wave outflow as discharge.
+      Surface-runoff NO3 (Flrl_no3_runoff, which includes tile drainage) enters on
+      the hillslope. Leached NO3 (Flrl_no3_leached) enters the sub-network with
+      subsurface runoff.
+    </desc>
+  </entry>
+
   <entry id="coupling_period" modify_via_xml="ROF_NCPL" skip_default_entry="true">
     <type>integer</type>
     <category>mosart</category>

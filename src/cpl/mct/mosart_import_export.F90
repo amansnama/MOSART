@@ -5,6 +5,7 @@ module mosart_import_export
   use mosart_cpl_indices  , only : index_x2r_Flrl_rofsur, index_x2r_Flrl_rofi
   use mosart_cpl_indices  , only : index_x2r_Flrl_rofgwl, index_x2r_Flrl_rofsub
   use mosart_cpl_indices  , only : index_x2r_Flrl_irrig
+  use mosart_cpl_indices  , only : index_x2r_Flrl_no3_runoff, index_x2r_Flrl_no3_leached
   use mosart_cpl_indices  , only : index_r2x_Forr_rofl, index_r2x_Forr_rofi
   use mosart_cpl_indices  , only : index_r2x_Flrr_flood
   use mosart_cpl_indices  , only : index_r2x_Flrr_volr, index_r2x_Flrr_volrmch
@@ -69,6 +70,9 @@ contains
 
        rtmCTL%qsur(n,nfrz) = x2r(index_x2r_Flrl_rofi ,n2) * (rtmCTL%area(n)*0.001_r8)
        rtmCTL%qirrig(n)    = x2r(index_x2r_Flrl_irrig,n2) * (rtmCTL%area(n)*0.001_r8)
+       ! nitrate is gN/m2/s; multiply by area to get gN/s. Do not use the water 0.001 factor.
+       rtmCTL%no3_runoff(n)  = x2r(index_x2r_Flrl_no3_runoff,n2)  * rtmCTL%area(n)
+       rtmCTL%no3_leached(n) = x2r(index_x2r_Flrl_no3_leached,n2) * rtmCTL%area(n)
 
        rtmCTL%qsub(n,nfrz) = 0.0_r8
        rtmCTL%qgwl(n,nfrz) = 0.0_r8

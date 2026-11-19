@@ -21,7 +21,7 @@ module RtmMod
                                inst_index, inst_suffix, inst_name, &
                                smat_option, decomp_option, &
                                bypass_routing_option, qgwl_runoff_option, &
-                               barrier_timers
+                               no3numeric_option, barrier_timers
   use RtmFileUtils    , only : getfil, getavu, relavu
   use RtmTimeManager  , only : timemgr_init, get_nstep, get_curr_date
   use RtmHistFlds     , only : RtmHistFldsInit, RtmHistFldsSet 
@@ -37,7 +37,9 @@ module RtmMod
                                gsmap_r, &
                                SMatP_dnstrm, avsrc_dnstrm, avdst_dnstrm, &
                                SMatP_direct, avsrc_direct, avdst_direct, &
-                               SMatP_eroutUp, avsrc_eroutUp, avdst_eroutUp
+                               SMatP_eroutUp, avsrc_eroutUp, avdst_eroutUp, &
+                               avsrc_eroutno3Up, avdst_eroutno3Up, &
+                               avsrc_directno3, avdst_directno3
   use MOSART_physics_mod, only : Euler
   use MOSART_physics_mod, only : updatestate_hillslope, updatestate_subnetwork, &
                                  updatestate_mainchannel
@@ -83,6 +85,7 @@ module RtmMod
 !local (gdc)
   real(r8), save, pointer :: evel(:,:)       ! effective tracer velocity (m/s)
   real(r8), save, pointer :: flow(:,:)       ! mosart flow (m3/s)
+  real(r8), save, pointer :: flowno3(:)     ! mosart NO3 discharge (gN/s)
   real(r8), save, pointer :: erout_prev(:,:) ! erout previous timestep (m3/s)
   real(r8), save, pointer :: eroutup_avg(:,:)! eroutup average over coupling period (m3/s)
   real(r8), save, pointer :: erlat_avg(:,:)  ! erlateral average over coupling period (m3/s)
@@ -151,7 +154,7 @@ contains
          rtmhist_fexcl1,  rtmhist_fexcl2, rtmhist_fexcl3, &
          rtmhist_avgflag_pertape, decomp_option, &
          bypass_routing_option, qgwl_runoff_option, &
-         smat_option, delt_mosart
+         smat_option, delt_mosart, no3numeric_option
 
     ! Preset values
     do_rtmflood = .false.
@@ -164,6 +167,7 @@ contains
     bypass_routing_option = 'direct_in_place'
     qgwl_runoff_option = 'threshold'
     smat_option = 'opt'
+    no3numeric_option = 'sameasQ'
 
     nlfilename_rof = "mosart_in" // trim(inst_suffix)
     inquire (file = trim(nlfilename_rof), exist = lexist)
@@ -196,6 +200,11 @@ contains
     call mpi_bcast (smat_option  , len(smat_option)  , MPI_CHARACTER, 0, mpicom_rof, ier)
     call mpi_bcast (bypass_routing_option, len(bypass_routing_option), MPI_CHARACTER, 0, mpicom_rof, ier)
     call mpi_bcast (qgwl_runoff_option, len(qgwl_runoff_option), MPI_CHARACTER, 0, mpicom_rof, ier)
+    call mpi_bcast (no3numeric_option, len(no3numeric_option), MPI_CHARACTER, 0, mpicom_rof, ier)
+    if (trim(no3numeric_option) /= 'sameasQ') then
+       write(iulog,*) 'MOSART no3numeric_option must be sameasQ, got ', trim(no3numeric_option)
+       call shr_sys_abort('MOSART no3numeric_option')
+    end if
     call mpi_bcast (do_rtmflood, 1, MPI_LOGICAL, 0, mpicom_rof, ier)
     call mpi_bcast (ice_runoff,  1, MPI_LOGICAL, 0, mpicom_rof, ier)
 
@@ -229,6 +238,7 @@ contains
        write(iulog,*) '   bypass_routing option = ',trim(bypass_routing_option)
        write(iulog,*) '   qgwl runoff option    = ',trim(qgwl_runoff_option)
        write(iulog,*) '   smat option           = ',trim(smat_option)
+       write(iulog,*) '   no3 routing option    = ',trim(no3numeric_option)
        if (nsrest == nsrStartup .and. finidat_rtm /= ' ') then
           write(iulog,*) '   MOSART initial data   = ',trim(finidat_rtm)
        end if
@@ -955,6 +965,7 @@ contains
 
     allocate (evel    (rtmCTL%begr:rtmCTL%endr,nt_rtm), &
               flow    (rtmCTL%begr:rtmCTL%endr,nt_rtm), &
+              flowno3 (rtmCTL%begr:rtmCTL%endr), &
               erout_prev(rtmCTL%begr:rtmCTL%endr,nt_rtm), &
               eroutup_avg(rtmCTL%begr:rtmCTL%endr,nt_rtm), &
               erlat_avg(rtmCTL%begr:rtmCTL%endr,nt_rtm), &
@@ -964,6 +975,7 @@ contains
        call shr_sys_abort(subname//' Allocationt ERROR flow')
     end if
     flow(:,:)    = 0._r8
+    flowno3(:)   = 0._r8
     erout_prev(:,:) = 0._r8
     eroutup_avg(:,:) = 0._r8
     erlat_avg(:,:) = 0._r8
@@ -1273,6 +1285,8 @@ contains
     if ( masterproc ) write(iulog,*) trim(subname),' MOSART initialize avect ',trim(rList)
     call mct_aVect_init(avsrc_direct,rList=rList,lsize=rtmCTL%lnumr)
     call mct_aVect_init(avdst_direct,rList=rList,lsize=rtmCTL%lnumr)
+    call mct_aVect_init(avsrc_directno3,rList='tr001',lsize=rtmCTL%lnumr)
+    call mct_aVect_init(avdst_directno3,rList='tr001',lsize=rtmCTL%lnumr)
 
     lsize = mct_smat_gNumEl(sMatP_direct%Matrix,mpicom_rof)
     if (masterproc) write(iulog,*) subname," Done initializing SmatP_direct, nElements = ",lsize
@@ -1318,6 +1332,10 @@ contains
        TRunoff%wt   = rtmCTL%wt
        TRunoff%wr   = rtmCTL%wr
        TRunoff%erout= rtmCTL%erout
+       TRunoff%no3h = rtmCTL%no3h
+       TRunoff%no3t = rtmCTL%no3t
+       TRunoff%no3r = rtmCTL%no3r
+       TRunoff%eroutno3 = rtmCTL%eroutno3
     else
 !       do nt = 1,nt_rtm
 !       do nr = rtmCTL%begr,rtmCTL%endr
@@ -1336,6 +1354,10 @@ contains
        rtmCTL%volr(nr,nt) = (TRunoff%wt(nr,nt) + TRunoff%wr(nr,nt) + &
                              TRunoff%wh(nr,nt)*rtmCTL%area(nr))
     enddo
+    enddo
+    do nr = rtmCTL%begr,rtmCTL%endr
+       rtmCTL%volno3(nr) = TRunoff%no3t(nr) + TRunoff%no3r(nr) + &
+            TRunoff%no3h(nr)*rtmCTL%area(nr)
     enddo
 
     call t_stopf('mosarti_restart')
@@ -1447,11 +1469,20 @@ contains
     budget_terms = 0._r8
 
     flow = 0._r8
+    flowno3 = 0._r8
     erout_prev = 0._r8
     eroutup_avg = 0._r8
     erlat_avg = 0._r8
     rtmCTL%runoff = 0._r8
     rtmCTL%direct = 0._r8
+    rtmCTL%directno3 = 0._r8
+    rtmCTL%no3_dis = 0._r8
+    rtmCTL%no3_dislnd = spval
+    rtmCTL%no3_disocn = spval
+    rtmCTL%no3_distot = spval
+    rtmCTL%dvolno3dt = 0._r8
+    rtmCTL%dvolno3dtlnd = spval
+    rtmCTL%dvolno3dtocn = spval
     rtmCTL%flood = 0._r8
     rtmCTL%qirrig_actual = 0._r8
     rtmCTL%runofflnd = spval
@@ -1492,6 +1523,9 @@ contains
        TRunoff%qsub(nr,nt) = rtmCTL%qsub(nr,nt)
        TRunoff%qgwl(nr,nt) = rtmCTL%qgwl(nr,nt)
     enddo
+       ! coupler inputs are gN/s here, same conversion stage as qsur/qsub
+       TRunoff%no3_runoff(nr)  = rtmCTL%no3_runoff(nr)
+       TRunoff%no3_leached(nr) = rtmCTL%no3_leached(nr)
     enddo
 
     !-----------------------------------
@@ -1711,11 +1745,26 @@ contains
                 TRunoff%qgwl(nr,nt) = 0._r8
              endif
           enddo
+          if (TRunoff%no3_leached(nr) < 0._r8) then
+             rtmCTL%directno3(nr) = rtmCTL%directno3(nr) + TRunoff%no3_leached(nr)
+             TRunoff%no3_leached(nr) = 0._r8
+          endif
+          if (TRunoff%no3_runoff(nr) < 0._r8) then
+             rtmCTL%directno3(nr) = rtmCTL%directno3(nr) + TRunoff%no3_runoff(nr)
+             TRunoff%no3_runoff(nr) = 0._r8
+          endif
+          if (TUnit%mask(nr) <= 0) then
+             rtmCTL%directno3(nr) = rtmCTL%directno3(nr) + &
+                  TRunoff%no3_leached(nr) + TRunoff%no3_runoff(nr)
+             TRunoff%no3_leached(nr) = 0._r8
+             TRunoff%no3_runoff(nr) = 0._r8
+          endif
        enddo
     endif
 
     if (trim(bypass_routing_option) == 'direct_to_outlet') then
        call mct_avect_zero(avsrc_direct)
+       call mct_avect_zero(avsrc_directno3)
        cnt = 0
        do nr = rtmCTL%begr,rtmCTL%endr
           cnt = cnt + 1
@@ -1748,6 +1797,27 @@ contains
                 TRunoff%qgwl(nr,nt) = 0._r8
              endif
           enddo
+          if (TRunoff%no3_leached(nr) < 0._r8) then
+             avsrc_directno3%rAttr(1,cnt) = avsrc_directno3%rAttr(1,cnt) + TRunoff%no3_leached(nr)
+             TRunoff%no3_leached(nr) = 0._r8
+          endif
+          if (TRunoff%no3_runoff(nr) < 0._r8) then
+             avsrc_directno3%rAttr(1,cnt) = avsrc_directno3%rAttr(1,cnt) + TRunoff%no3_runoff(nr)
+             TRunoff%no3_runoff(nr) = 0._r8
+          endif
+          if (TUnit%mask(nr) <= 0) then
+             avsrc_directno3%rAttr(1,cnt) = avsrc_directno3%rAttr(1,cnt) + &
+                  TRunoff%no3_leached(nr) + TRunoff%no3_runoff(nr)
+             TRunoff%no3_leached(nr) = 0._r8
+             TRunoff%no3_runoff(nr) = 0._r8
+          endif
+       enddo
+       call mct_avect_zero(avdst_directno3)
+       call mct_sMat_avMult(avsrc_directno3, sMatP_direct, avdst_directno3)
+       cnt = 0
+       do nr = rtmCTL%begr,rtmCTL%endr
+          cnt = cnt + 1
+          rtmCTL%directno3(nr) = rtmCTL%directno3(nr) + avdst_directno3%rAttr(1,cnt)
        enddo
        call mct_avect_zero(avdst_direct)
        
@@ -1815,6 +1885,10 @@ contains
        TRunoff%qgwl(nr,nt) = TRunoff%qgwl(nr,nt) / rtmCTL%area(nr)
     enddo
     enddo
+    do nr = rtmCTL%begr,rtmCTL%endr
+       TRunoff%no3_runoff(nr)  = TRunoff%no3_runoff(nr)  / rtmCTL%area(nr)
+       TRunoff%no3_leached(nr) = TRunoff%no3_leached(nr) / rtmCTL%area(nr)
+    enddo
 
     do ns = 1,nsub
 
@@ -1871,6 +1945,9 @@ contains
           erlat_avg(nr,nt) = erlat_avg(nr,nt) + TRunoff%erlat_avg(nr,nt)
        enddo
        enddo
+       do nr = rtmCTL%begr,rtmCTL%endr
+          flowno3(nr) = flowno3(nr) + TRunoff%flowno3(nr)
+       enddo
 
     enddo ! nsub
 
@@ -1879,6 +1956,7 @@ contains
     !-----------------------------------
 
     flow        = flow        / float(nsub)
+    flowno3     = flowno3     / float(nsub)
     erout_prev  = erout_prev  / float(nsub)
     eroutup_avg = eroutup_avg / float(nsub)
     erlat_avg   = erlat_avg   / float(nsub)
@@ -1891,6 +1969,10 @@ contains
     rtmCTL%wt      = TRunoff%wt
     rtmCTL%wr      = TRunoff%wr
     rtmCTL%erout   = TRunoff%erout
+    rtmCTL%no3h    = TRunoff%no3h
+    rtmCTL%no3t    = TRunoff%no3t
+    rtmCTL%no3r    = TRunoff%no3r
+    rtmCTL%eroutno3 = TRunoff%eroutno3
 
     do nt = 1,nt_rtm
     do nr = rtmCTL%begr,rtmCTL%endr
@@ -1910,6 +1992,23 @@ contains
           rtmCTL%dvolrdtocn(nr,nt)= rtmCTL%dvolrdt(nr,nt)
        endif
     enddo
+    enddo
+
+    do nr = rtmCTL%begr,rtmCTL%endr
+       volr_init = rtmCTL%volno3(nr)
+       rtmCTL%volno3(nr) = TRunoff%no3t(nr) + TRunoff%no3r(nr) + &
+            TRunoff%no3h(nr)*rtmCTL%area(nr)
+       rtmCTL%dvolno3dt(nr) = (rtmCTL%volno3(nr) - volr_init) / delt_coupling
+       rtmCTL%no3_dis(nr) = flowno3(nr)
+       rtmCTL%no3_distot(nr) = rtmCTL%directno3(nr)
+       if (rtmCTL%mask(nr) == 1) then
+          rtmCTL%no3_dislnd(nr) = rtmCTL%no3_dis(nr)
+          rtmCTL%dvolno3dtlnd(nr) = rtmCTL%dvolno3dt(nr)
+       elseif (rtmCTL%mask(nr) >= 2) then
+          rtmCTL%no3_disocn(nr) = rtmCTL%no3_dis(nr)
+          rtmCTL%no3_distot(nr) = rtmCTL%no3_distot(nr) + rtmCTL%no3_dis(nr)
+          rtmCTL%dvolno3dtocn(nr) = rtmCTL%dvolno3dt(nr)
+       endif
     enddo
 
     call t_stopf('mosartr_subcycling')
@@ -2535,6 +2634,26 @@ contains
 
      allocate (TRunoff%flow(begr:endr,nt_rtm))
      TRunoff%flow = 0._r8
+
+     allocate (TRunoff%no3_runoff(begr:endr))  ; TRunoff%no3_runoff = 0._r8
+     allocate (TRunoff%no3_leached(begr:endr)) ; TRunoff%no3_leached = 0._r8
+     allocate (TRunoff%no3h(begr:endr))        ; TRunoff%no3h = 0._r8
+     allocate (TRunoff%dno3h(begr:endr))       ; TRunoff%dno3h = 0._r8
+     allocate (TRunoff%ehoutno3(begr:endr))    ; TRunoff%ehoutno3 = 0._r8
+     allocate (TRunoff%no3t(begr:endr))        ; TRunoff%no3t = 0._r8
+     allocate (TRunoff%dno3t(begr:endr))       ; TRunoff%dno3t = 0._r8
+     allocate (TRunoff%etinno3(begr:endr))     ; TRunoff%etinno3 = 0._r8
+     allocate (TRunoff%etoutno3(begr:endr))    ; TRunoff%etoutno3 = 0._r8
+     allocate (TRunoff%no3r(begr:endr))        ; TRunoff%no3r = 0._r8
+     allocate (TRunoff%dno3r(begr:endr))       ; TRunoff%dno3r = 0._r8
+     allocate (TRunoff%erlateralno3(begr:endr)); TRunoff%erlateralno3 = 0._r8
+     allocate (TRunoff%erinno3(begr:endr))     ; TRunoff%erinno3 = 0._r8
+     allocate (TRunoff%eroutno3(begr:endr))    ; TRunoff%eroutno3 = 0._r8
+     allocate (TRunoff%eroutno3_prev(begr:endr)); TRunoff%eroutno3_prev = 0._r8
+     allocate (TRunoff%eroutno3Up(begr:endr))  ; TRunoff%eroutno3Up = 0._r8
+     allocate (TRunoff%eroutno3up_avg(begr:endr)); TRunoff%eroutno3up_avg = 0._r8
+     allocate (TRunoff%erlatno3_avg(begr:endr)); TRunoff%erlatno3_avg = 0._r8
+     allocate (TRunoff%flowno3(begr:endr))     ; TRunoff%flowno3 = 0._r8
     
      allocate (TPara%c_twid(begr:endr))
      TPara%c_twid = 1.0_r8
@@ -2698,6 +2817,8 @@ contains
      if ( masterproc ) write(iulog,*) trim(subname),' MOSART initialize avect ',trim(rList)
      call mct_aVect_init(avsrc_eroutUp,rList=rList,lsize=rtmCTL%lnumr)
      call mct_aVect_init(avdst_eroutUp,rList=rList,lsize=rtmCTL%lnumr)
+     call mct_aVect_init(avsrc_eroutno3Up,rList='tr001',lsize=rtmCTL%lnumr)
+     call mct_aVect_init(avdst_eroutno3Up,rList='tr001',lsize=rtmCTL%lnumr)
 
      lsize = mct_smat_gNumEl(sMatP_eroutUp%Matrix,mpicom_rof)
      if (masterproc) write(iulog,*) subname," Done initializing SmatP_eroutUp, nElements = ",lsize

@@ -30,6 +30,11 @@ module RunoffMod
   type(mct_sMatP),public :: sMatP_eroutUp ! sparse matrix plus for eroutUp calc
   type(mct_avect),public :: avsrc_eroutUp ! src avect for SM mult eroutUp calc
   type(mct_avect),public :: avdst_eroutUp ! dst avect for SM mult eroutUp calc
+  ! nitrate uses the same downstream map as discharge; these hold one field
+  type(mct_avect),public :: avsrc_eroutno3Up
+  type(mct_avect),public :: avdst_eroutno3Up
+  type(mct_avect),public :: avsrc_directno3
+  type(mct_avect),public :: avdst_directno3
 
   public :: runoff_flow
   type runoff_flow
@@ -80,6 +85,24 @@ module RunoffMod
 
      real(r8), pointer :: qirrig(:)        ! coupler irrigation [m3/s]
      real(r8), pointer :: qirrig_actual(:) ! minimum of irrigation and available main channel storage
+
+     ! nitrate. Inputs are gN/s after the area conversion. Storages match water:
+     ! hillslope is per area (gN/m2), subnetwork and channel are gN.
+     real(r8), pointer :: no3_runoff(:)    ! surface-runoff NO3, including tile drainage [gN/s]
+     real(r8), pointer :: no3_leached(:)   ! subsurface-leaching NO3 [gN/s]
+     real(r8), pointer :: no3h(:)          ! hillslope NO3 storage [gN/m2]
+     real(r8), pointer :: no3t(:)          ! sub-network NO3 storage [gN]
+     real(r8), pointer :: no3r(:)          ! main-channel NO3 storage [gN]
+     real(r8), pointer :: eroutno3(:)      ! NO3 outflow from the main channel [gN/s]
+     real(r8), pointer :: directno3(:)     ! NO3 sent straight to the outlet [gN/s]
+     real(r8), pointer :: no3_dis(:)       ! routed NO3 discharge [gN/s]
+     real(r8), pointer :: no3_dislnd(:)    ! routed NO3 discharge on land [gN/s]
+     real(r8), pointer :: no3_disocn(:)    ! routed NO3 discharge to the ocean [gN/s]
+     real(r8), pointer :: no3_distot(:)    ! direct plus ocean NO3 discharge [gN/s]
+     real(r8), pointer :: volno3(:)        ! total NO3 storage [gN]
+     real(r8), pointer :: dvolno3dt(:)     ! change in NO3 storage [gN/s]
+     real(r8), pointer :: dvolno3dtlnd(:)
+     real(r8), pointer :: dvolno3dtocn(:)
 
      !    - history (currently needed)
      real(r8), pointer :: runofflnd_nt1(:)
@@ -249,6 +272,27 @@ module RunoffMod
      real(r8), pointer :: eroutUp_avg(:,:) ! outflow sum of upstream gridcells, average [m3/s]
      real(r8), pointer :: erlat_avg(:,:) ! erlateral average [m3/s]
      real(r8), pointer :: flow(:,:)    ! streamflow from the outlet of the reach, [m3/s]
+
+     ! nitrate, liquid tracer only. Hillslope storage is gN/m2; channel storage is gN.
+     real(r8), pointer :: no3_runoff(:)
+     real(r8), pointer :: no3_leached(:)
+     real(r8), pointer :: no3h(:)
+     real(r8), pointer :: dno3h(:)
+     real(r8), pointer :: ehoutno3(:)
+     real(r8), pointer :: no3t(:)
+     real(r8), pointer :: dno3t(:)
+     real(r8), pointer :: etinno3(:)
+     real(r8), pointer :: etoutno3(:)
+     real(r8), pointer :: no3r(:)
+     real(r8), pointer :: dno3r(:)
+     real(r8), pointer :: erlateralno3(:)
+     real(r8), pointer :: erinno3(:)
+     real(r8), pointer :: eroutno3(:)
+     real(r8), pointer :: eroutno3_prev(:)
+     real(r8), pointer :: eroutno3Up(:)
+     real(r8), pointer :: eroutno3up_avg(:)
+     real(r8), pointer :: erlatno3_avg(:)
+     real(r8), pointer :: flowno3(:)
      real(r8), pointer :: erin1(:,:)   ! inflow from upstream links during previous step, used for Muskingum method, [m3/s]
      real(r8), pointer :: erin2(:,:)   ! inflow from upstream links during current step, used for Muskingum method, [m3/s]
      real(r8), pointer :: ergwl(:,:)   ! flux item for the adjustment of water balance residual in glacie, wetlands and lakes dynamics [m3/s]
@@ -339,6 +383,21 @@ contains
              rtmCTL%qgwl(begr:endr,nt_rtm),       &
              rtmCTL%qirrig(begr:endr),            &
              rtmCTL%qirrig_actual(begr:endr),     &
+             rtmCTL%no3_runoff(begr:endr),        &
+             rtmCTL%no3_leached(begr:endr),       &
+             rtmCTL%no3h(begr:endr),              &
+             rtmCTL%no3t(begr:endr),              &
+             rtmCTL%no3r(begr:endr),              &
+             rtmCTL%eroutno3(begr:endr),          &
+             rtmCTL%directno3(begr:endr),         &
+             rtmCTL%no3_dis(begr:endr),           &
+             rtmCTL%no3_dislnd(begr:endr),        &
+             rtmCTL%no3_disocn(begr:endr),        &
+             rtmCTL%no3_distot(begr:endr),        &
+             rtmCTL%volno3(begr:endr),            &
+             rtmCTL%dvolno3dt(begr:endr),         &
+             rtmCTL%dvolno3dtlnd(begr:endr),      &
+             rtmCTL%dvolno3dtocn(begr:endr),      &
              stat=ier)
     if (ier /= 0) then
        write(iulog,*)'Rtmini ERROR allocation of runoff local arrays'
@@ -362,6 +421,22 @@ contains
     rtmCTL%qsur(:,:)       = 0._r8
     rtmCTL%qsub(:,:)       = 0._r8
     rtmCTL%qgwl(:,:)       = 0._r8
+
+    rtmCTL%no3_runoff(:)   = 0._r8
+    rtmCTL%no3_leached(:)  = 0._r8
+    rtmCTL%no3h(:)         = 0._r8
+    rtmCTL%no3t(:)         = 0._r8
+    rtmCTL%no3r(:)         = 0._r8
+    rtmCTL%eroutno3(:)     = 0._r8
+    rtmCTL%directno3(:)    = 0._r8
+    rtmCTL%no3_dis(:)      = 0._r8
+    rtmCTL%no3_dislnd(:)   = spval
+    rtmCTL%no3_disocn(:)   = spval
+    rtmCTL%no3_distot(:)   = spval
+    rtmCTL%volno3(:)       = 0._r8
+    rtmCTL%dvolno3dt(:)    = 0._r8
+    rtmCTL%dvolno3dtlnd(:) = spval
+    rtmCTL%dvolno3dtocn(:) = spval
 
   end subroutine RunoffInit
 

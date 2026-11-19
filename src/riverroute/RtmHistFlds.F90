@@ -42,6 +42,38 @@ contains
          avgflag='A', long_name='MOSART river basin flow: '//trim(rtm_tracers(1)), &
          ptr_rof=rtmCTL%runofflnd_nt1, default='active')
 
+    call RtmHistAddfld (fname='SMIN_NO3_RUNOFF_FROM_COUPLER', units='gN/s', &
+         avgflag='A', long_name='NO3 in surface runoff from the land, including tile drainage', &
+         ptr_rof=rtmCTL%no3_runoff, default='active')
+
+    call RtmHistAddfld (fname='SMIN_NO3_LEACHED_FROM_COUPLER', units='gN/s', &
+         avgflag='A', long_name='NO3 in subsurface leaching from the land', &
+         ptr_rof=rtmCTL%no3_leached, default='active')
+
+    call RtmHistAddfld (fname='TOTAL_NO3_DISCHARGE_TO_OCEAN', units='gN/s', &
+         avgflag='A', long_name='MOSART total NO3 discharge to the ocean', &
+         ptr_rof=rtmCTL%no3_distot, default='active')
+
+    call RtmHistAddfld (fname='DIRECT_NO3_DISCHARGE_TO_OCEAN', units='gN/s', &
+         avgflag='A', long_name='MOSART NO3 sent directly to the outlet', &
+         ptr_rof=rtmCTL%directno3, default='active')
+
+    call RtmHistAddfld (fname='NO3_STORAGE', units='gN', &
+         avgflag='A', long_name='MOSART total NO3 storage', &
+         ptr_rof=rtmCTL%volno3, default='inactive')
+
+    call RtmHistAddfld (fname='NO3_STORAGE_MCH', units='gN', &
+         avgflag='A', long_name='MOSART main-channel NO3 storage', &
+         ptr_rof=rtmCTL%no3r, default='inactive')
+
+    call RtmHistAddfld (fname='NO3_Hillslope', units='gN/m2', &
+         avgflag='A', long_name='MOSART hillslope NO3 storage', &
+         ptr_rof=rtmCTL%no3h, default='inactive')
+
+    call RtmHistAddfld (fname='NO3_SubN', units='gN', &
+         avgflag='A', long_name='MOSART sub-network NO3 storage', &
+         ptr_rof=rtmCTL%no3t, default='inactive')
+
     call RtmHistAddfld (fname='RIVER_DISCHARGE_OVER_LAND'//'_'//trim(rtm_tracers(2)), units='m3/s',  &
          avgflag='A', long_name='MOSART river basin flow: '//trim(rtm_tracers(2)), &
          ptr_rof=rtmCTL%runofflnd_nt2, default='active')

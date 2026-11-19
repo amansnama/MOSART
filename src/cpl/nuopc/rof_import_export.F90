@@ -114,6 +114,8 @@ contains
     call fldlist_add(fldsToRof_num, fldsToRof, 'Flrl_rofsub')
     call fldlist_add(fldsToRof_num, fldsToRof, 'Flrl_rofi')
     call fldlist_add(fldsToRof_num, fldsToRof, 'Flrl_irrig')
+    call fldlist_add(fldsToRof_num, fldsToRof, 'Flrl_no3_runoff')
+    call fldlist_add(fldsToRof_num, fldsToRof, 'Flrl_no3_leached')
 
     do n = 1,fldsToRof_num
        call NUOPC_Advertise(importState, standardName=fldsToRof(n)%stdname, &
@@ -291,6 +293,14 @@ contains
 
     call state_getimport(importState, 'Flrl_irrig', begr, endr, rtmCTL%area, output=rtmCTL%qirrig(:), &
          do_area_correction=.true., rc=rc)
+    if (ChkErr(rc,__LINE__,u_FILE_u)) return
+
+    call state_getimport(importState, 'Flrl_no3_runoff', begr, endr, rtmCTL%area, output=rtmCTL%no3_runoff(:), &
+         do_area_correction=.true., unit_scale=1.0_r8, rc=rc)
+    if (ChkErr(rc,__LINE__,u_FILE_u)) return
+
+    call state_getimport(importState, 'Flrl_no3_leached', begr, endr, rtmCTL%area, output=rtmCTL%no3_leached(:), &
+         do_area_correction=.true., unit_scale=1.0_r8, rc=rc)
     if (ChkErr(rc,__LINE__,u_FILE_u)) return
 
     rtmCTL%qsub(begr:endr, nfrz) = 0.0_r8
@@ -586,10 +596,12 @@ contains
     logical             , intent(in)    :: do_area_correction
     real(r8)            , intent(out)   :: output(begr:endr)
     integer             , intent(out)   :: rc
+    real(r8)            , intent(in), optional :: unit_scale
 
     ! local variables
     type(ESMF_Field)            :: lfield
     integer                     :: g, i
+    real(r8)                    :: scale
     real(R8), pointer           :: fldptr(:)
     character(len=*), parameter :: subname='(rof_import_export:state_getimport)'
     ! ----------------------------------------------
@@ -602,12 +614,16 @@ contains
     call ESMF_FieldGet(lfield, farrayPtr=fldptr, rc=rc)
     if (ChkErr(rc,__LINE__,u_FILE_u)) return
 
-    ! determine output array and scale by unit convertsion
+    ! determine output array and scale by unit convertsion.
+    ! Water fluxes are kg/m2/s and use 0.001 to become m3/s. Nitrate is gN/m2/s
+    ! and uses 1 so the result is gN/s.
+    scale = 0.001_r8
+    if (present(unit_scale)) scale = unit_scale
     if (do_area_correction) then
        fldptr(:) = fldptr(:) * med2mod_areacor(:)
     end if
     do g = begr,endr
-       output(g) = fldptr(g-begr+1) * area(g)*0.001_r8
+       output(g) = fldptr(g-begr+1) * area(g)*scale
     end do
 
     ! check for nans

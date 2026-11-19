@@ -441,6 +441,53 @@ contains
     enddo
     enddo
 
+    ! Nitrate storages. A startup file that predates these fields is zeroed.
+    ! A continue run must already contain them.
+    do nv = 1,5
+       if (nv == 1) then
+          vname = 'RTM_VOLNO3'
+          lname = 'NO3 storage in cell'
+          uname = 'gN'
+          dfld  => rtmCTL%volno3
+       else if (nv == 2) then
+          vname = 'RTM_NO3H'
+          lname = 'hillslope NO3 storage'
+          uname = 'gN/m2'
+          dfld  => rtmCTL%no3h
+       else if (nv == 3) then
+          vname = 'RTM_NO3T'
+          lname = 'sub-network NO3 storage'
+          uname = 'gN'
+          dfld  => rtmCTL%no3t
+       else if (nv == 4) then
+          vname = 'RTM_NO3R'
+          lname = 'main channel NO3 storage'
+          uname = 'gN'
+          dfld  => rtmCTL%no3r
+       else if (nv == 5) then
+          vname = 'RTM_EROUTNO3'
+          lname = 'NO3 outflow from the main channel'
+          uname = 'gN/s'
+          dfld  => rtmCTL%eroutno3
+       end if
+
+       if (flag == 'define') then
+          call ncd_defvar(ncid=ncid, varname=trim(vname), &
+               xtype=ncd_double,  dim1name='rtmlon', dim2name='rtmlat', &
+               long_name=trim(lname), units=trim(uname), fill_value=spval)
+       else if (flag == 'read' .or. flag == 'write') then
+          call ncd_io(varname=trim(vname), data=dfld, dim1name='allrof', &
+               ncid=ncid, flag=flag, readvar=readvar)
+          if (flag=='read' .and. .not. readvar) then
+             if (nsrest == nsrContinue) then
+                call shr_sys_abort('MOSART restart is missing '//trim(vname))
+             else
+                dfld = 0._r8
+             end if
+          end if
+       end if
+    enddo
+
     if (flag == 'read') then
        do n = rtmCTL%begr,rtmCTL%endr
           do nt = 1,nt_rtm
@@ -452,6 +499,11 @@ contains
              if (abs(rtmCTL%wr(n,nt))      > 1.e30) rtmCTL%wr(n,nt) = 0.
              if (abs(rtmCTL%erout(n,nt))   > 1.e30) rtmCTL%erout(n,nt) = 0.
           end do
+          if (abs(rtmCTL%volno3(n))  > 1.e30) rtmCTL%volno3(n) = 0.
+          if (abs(rtmCTL%no3h(n))    > 1.e30) rtmCTL%no3h(n) = 0.
+          if (abs(rtmCTL%no3t(n))    > 1.e30) rtmCTL%no3t(n) = 0.
+          if (abs(rtmCTL%no3r(n))    > 1.e30) rtmCTL%no3r(n) = 0.
+          if (abs(rtmCTL%eroutno3(n))> 1.e30) rtmCTL%eroutno3(n) = 0.
           if (rtmCTL%mask(n) == 1) then
              do nt = 1,nt_rtm
                 rtmCTL%runofflnd(n,nt) = rtmCTL%runoff(n,nt)

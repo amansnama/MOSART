@@ -36,6 +36,7 @@ module RtmVar
   character(len=32) , public :: bypass_routing_option          ! bypass routing model method
   character(len=32) , public :: qgwl_runoff_option             ! method for handling qgwl runoff
   character(len=32) , public :: smat_option                    ! smatrix multiply option (opt, Xonly, Yonly)
+  character(len=32) , public :: no3numeric_option              ! NO3 routing; only 'sameasQ' is implemented
                                                                ! opt   = XandY in MCT
                                                                ! Xonly = Xonly in MCT, should be bfb on different pe counts
                                                                ! Yonly = Yonly in MCT
