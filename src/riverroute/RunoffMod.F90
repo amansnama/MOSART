@@ -103,6 +103,9 @@ module RunoffMod
      real(r8), pointer :: dvolno3dt(:)     ! change in NO3 storage [gN/s]
      real(r8), pointer :: dvolno3dtlnd(:)
      real(r8), pointer :: dvolno3dtocn(:)
+     integer , pointer :: nInstable(:)      ! explicitBakward substeps that fail the stability test
+     integer , pointer :: nTstep(:)         ! explicitBakward substeps taken
+     real(r8), pointer :: nInstableRatio(:) ! nInstable / nTstep
 
      !    - history (currently needed)
      real(r8), pointer :: runofflnd_nt1(:)
@@ -206,6 +209,7 @@ module RunoffMod
      integer , pointer :: dnID(:)      ! IDs of the downstream units, corresponding to the subbasin ID in the input table
      integer , pointer :: nUp(:)       ! number of upstream units, maximum 8
      integer , pointer :: iUp(:,:)     ! IDs of upstream units, corresponding to the subbasin ID in the input table
+     integer , pointer :: maxUp(:)     ! decomposed id of the upstream unit with the most channel storage
   
      integer , pointer :: indexDown(:) ! indices of the downstream units in the ID array. sometimes subbasins IDs may not be continuous
   
@@ -398,6 +402,9 @@ contains
              rtmCTL%dvolno3dt(begr:endr),         &
              rtmCTL%dvolno3dtlnd(begr:endr),      &
              rtmCTL%dvolno3dtocn(begr:endr),      &
+             rtmCTL%nInstable(begr:endr),         &
+             rtmCTL%nTstep(begr:endr),            &
+             rtmCTL%nInstableRatio(begr:endr),    &
              stat=ier)
     if (ier /= 0) then
        write(iulog,*)'Rtmini ERROR allocation of runoff local arrays'
@@ -437,6 +444,9 @@ contains
     rtmCTL%dvolno3dt(:)    = 0._r8
     rtmCTL%dvolno3dtlnd(:) = spval
     rtmCTL%dvolno3dtocn(:) = spval
+    rtmCTL%nInstable(:) = 0
+    rtmCTL%nTstep(:) = 0
+    rtmCTL%nInstableRatio(:) = 0._r8
 
   end subroutine RunoffInit
 

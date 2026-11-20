@@ -201,8 +201,8 @@ contains
     call mpi_bcast (bypass_routing_option, len(bypass_routing_option), MPI_CHARACTER, 0, mpicom_rof, ier)
     call mpi_bcast (qgwl_runoff_option, len(qgwl_runoff_option), MPI_CHARACTER, 0, mpicom_rof, ier)
     call mpi_bcast (no3numeric_option, len(no3numeric_option), MPI_CHARACTER, 0, mpicom_rof, ier)
-    if (trim(no3numeric_option) /= 'sameasQ') then
-       write(iulog,*) 'MOSART no3numeric_option must be sameasQ, got ', trim(no3numeric_option)
+    if (trim(no3numeric_option) /= 'sameasQ' .and. trim(no3numeric_option) /= 'explicitBakward') then
+       write(iulog,*) 'MOSART no3numeric_option must be sameasQ or explicitBakward, got ', trim(no3numeric_option)
        call shr_sys_abort('MOSART no3numeric_option')
     end if
     call mpi_bcast (do_rtmflood, 1, MPI_LOGICAL, 0, mpicom_rof, ier)
@@ -320,7 +320,9 @@ contains
     integer           :: cnt, lsize, gsize    ! counter
 
     real(r8)          :: deg2rad              ! pi/180    
-    integer           :: g, n, i, j, nr, nt      ! iterators
+    integer           :: g, n, i, j, nr, nt, k   ! iterators
+    integer ,allocatable :: nupunit(:)        ! number of immediate upstream cells
+    integer ,allocatable :: iupglo(:,:)       ! global ids of immediate upstream cells
     integer  :: nl,nloops                     ! used for decomp search
     character(len=256):: fnamer               ! name of netcdf restart file 
     character(len=256):: pnamer               ! full pathname of netcdf restart file
@@ -698,6 +700,23 @@ contains
           idxocn(nr) = n
        endif
     enddo
+
+    ! Immediate upstream cells. One pass over dnID gives the same list as a
+    ! search from every land cell, and stays within the eight D8 inflows.
+    allocate(nupunit(rtmlon*rtmlat), iupglo(rtmlon*rtmlat,8), stat=ier)
+    if (ier /= 0) call shr_sys_abort(subname//' ERROR alloc for nupunit iupglo')
+    nupunit = 0
+    iupglo = 0
+    do g = 1, rtmlon*rtmlat
+       n = dnID_global(g)
+       if (n >= 1 .and. n <= rtmlon*rtmlat) then
+          if (abs(gmask(n)) == 1) then
+             if (nupunit(n) >= 8) call shr_sys_abort(subname//' ERROR more than 8 upstream cells')
+             nupunit(n) = nupunit(n) + 1
+             iupglo(n, nupunit(n)) = g
+          end if
+       end if
+    end do
     call t_stopf('mosarti_dec_basins')
 
     ! check
@@ -1063,7 +1082,6 @@ contains
        endif
     enddo
     deallocate(gmask)
-    deallocate(rglo2gdc)
     deallocate(rgdc2glo)
     deallocate (dnID_global,area_global)
     deallocate(idxocn)
@@ -1310,6 +1328,15 @@ contains
 !    if (masterproc) write(iulog,*) ' call mosart_init'
 !    if (masterproc) call shr_sys_flush(iulog)
     call MOSART_init()
+
+    do nr = rtmCTL%begr, rtmCTL%endr
+       n = rtmCTL%gindex(nr)
+       TUnit%nUp(nr) = nupunit(n)
+       do k = 1, TUnit%nUp(nr)
+          TUnit%iUp(nr,k) = rglo2gdc(iupglo(n,k))
+       end do
+    end do
+    deallocate(rglo2gdc, nupunit, iupglo)
 
     call t_stopf('mosarti_mosart_init')
 
@@ -2519,6 +2546,8 @@ contains
 
      allocate(TUnit%iUp(begr:endr,8))
      TUnit%iUp = 0
+     allocate(TUnit%maxUp(begr:endr))
+     TUnit%maxUp = 0
 
      allocate(TUnit%indexDown(begr:endr))
      TUnit%indexDown = 0

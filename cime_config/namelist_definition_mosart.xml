@@ -41,13 +41,16 @@
     <type>char</type>
     <category>mosart</category>
     <group>mosart_inparm</group>
-    <valid_values>sameasQ</valid_values>
+    <valid_values>sameasQ,explicitBakward</valid_values>
     <values>
       <value>sameasQ</value>
     </values>
     <desc>
       How nitrate moves with the river. sameasQ carries dissolved NO3 at the
       local water concentration, using the same kinematic-wave outflow as discharge.
+      explicitBakward adds upstream/downstream advection, longitudinal dispersion,
+      and a concentration-dependent denitrification sink. That option advances
+      liquid water with the global maximum channel substep.
       Surface-runoff NO3 (Flrl_no3_runoff, which includes tile drainage) enters on
       the hillslope. Leached NO3 (Flrl_no3_leached) enters the sub-network with
       subsurface runoff.

@@ -13,11 +13,11 @@ MODULE MOSART_physics_mod
   use shr_kind_mod  , only : r8 => shr_kind_r8
   use shr_const_mod , only : SHR_CONST_REARTH, SHR_CONST_PI
   use shr_sys_mod   , only : shr_sys_abort
-  use RtmVar        , only : iulog, barrier_timers, nt_rtm, rtm_tracers, no3numeric_option
+  use RtmVar        , only : iulog, barrier_timers, nt_rtm, rtm_tracers, no3numeric_option, rtmlon, rtmlat
   use RunoffMod     , only : Tctl, TUnit, TRunoff, TPara, rtmCTL
   use RunoffMod     , only : SMatP_eroutUp, avsrc_eroutUp, avdst_eroutUp
   use RunoffMod     , only : avsrc_eroutno3Up, avdst_eroutno3Up
-  use RtmSpmd       , only : masterproc, mpicom_rof
+  use RtmSpmd       , only : masterproc, mpicom_rof, MPI_REAL8, MPI_INTEGER, MPI_SUM, MPI_MAX
   use perf_mod      , only: t_startf, t_stopf
   use mct_mod
 
@@ -28,6 +28,11 @@ MODULE MOSART_physics_mod
     integer  :: nt               ! loop indices
   real(r8), parameter :: SLOPE1def = 0.1_r8        ! here give it a small value in order to avoid the abrupt change of hydraulic radidus etc.
   real(r8) :: sinatanSLOPE1defr   ! 1.0/sin(atan(slope1))
+
+  ! Neighbor state for explicitBakward. Indexed by the global lat-lon id, filled
+  ! for the current channel substep, and used only while that option is active.
+  integer , allocatable :: eb_gindex(:)
+  real(r8), allocatable :: eb_no3r(:), eb_erout(:), eb_eroutno3(:), eb_mr(:), eb_Ex(:)
 
   public Euler
   public updatestate_hillslope
@@ -194,6 +199,9 @@ MODULE MOSART_physics_mod
        call t_startf('mosartr_chanroute')    
        do nt=1,nt_rtm
        if (TUnit%euler_calc(nt)) then
+       if (nt == 1 .and. trim(no3numeric_option) == 'explicitBakward') then
+          call channel_explicit_backward()
+       else
        do iunit=rtmCTL%begr,rtmCTL%endr
           if(TUnit%mask(iunit) > 0) then
              localDeltaT = Tctl%DeltaT/Tctl%DLevelH2R/TUnit%numDT_r(iunit)
@@ -221,6 +229,7 @@ MODULE MOSART_physics_mod
              end if
           endif
        end do ! iunit
+       end if
        endif  ! euler_calc
        end do ! nt
        negchan = min(negchan, minval(TRunoff%wr(:,:)))
@@ -379,9 +388,6 @@ MODULE MOSART_physics_mod
           TRunoff%vr(iunit,nt) = CRVRMAN_nosqrt(TUnit%rslpsqrt(iunit), TUnit%nr(iunit), TRunoff%rr(iunit,nt))
           TRunoff%erout(iunit,nt) = -TRunoff%vr(iunit,nt) * TRunoff%mr(iunit,nt)
           if (nt == 1) then
-             if (trim(no3numeric_option) /= 'sameasQ') then
-                call shr_sys_abort('MOSART no3numeric_option must be sameasQ')
-             end if
              if (TRunoff%wr(iunit,nt) > 0._r8) then
                 TRunoff%eroutno3(iunit) = TRunoff%erout(iunit,nt) * TRunoff%no3r(iunit) / TRunoff%wr(iunit,nt)
              else
@@ -406,7 +412,11 @@ MODULE MOSART_physics_mod
            
     TRunoff%dwr(iunit,nt) = TRunoff%erlateral(iunit,nt) + TRunoff%erin(iunit,nt) + TRunoff%erout(iunit,nt) + temp_gwl
     if (nt == 1) then
-       TRunoff%dno3r(iunit) = TRunoff%erlateralno3(iunit) + TRunoff%erinno3(iunit) + TRunoff%eroutno3(iunit)
+       if (trim(no3numeric_option) == 'explicitBakward') then
+          call explicit_backward_dno3r(iunit, nt, theDeltaT)
+       else
+          TRunoff%dno3r(iunit) = TRunoff%erlateralno3(iunit) + TRunoff%erinno3(iunit) + TRunoff%eroutno3(iunit)
+       end if
     end if
 
     if((TRunoff%wr(iunit,nt)/theDeltaT &
@@ -790,6 +800,191 @@ MODULE MOSART_physics_mod
     !write(unit=nio,fmt="((a10),7(e20.11))") theTime, liqWater%yh(ii), liqWater%dwh(ii),liqWater%etin(ii), liqWater%vr(ii), liqWater%erin(ii), liqWater%erout(ii)/(TUnit%area(ii)*TUnit%frac(ii)), liqWater%flow(ii)
   
   end subroutine printTest
+
+!-----------------------------------------------------------------------
+
+  subroutine channel_explicit_backward()
+  ! Liquid channel step for explicitBakward. Every cell uses the global maximum
+  ! substep so the neighbor storages exchanged below are at the same time.
+
+    integer :: iunit, k, kk, unitUp, numDT_rMAX, local_max, ier, maxloc_up, nglob
+    real(r8) :: localDeltaT, temp_erout, temp_eroutno3
+    real(r8) :: temp_flow(8)
+    real(r8), allocatable :: erout_sum(:), eroutno3_sum(:)
+    real(r8), allocatable :: no3r_task(:), erout_task(:), eroutno3_task(:), wr_task(:), mr_task(:), Ex_task(:)
+    real(r8), allocatable :: eb_wr(:)
+    integer , allocatable :: gindex_task(:)
+
+    nglob = rtmlon*rtmlat
+    local_max = 0
+    if (rtmCTL%endr >= rtmCTL%begr) local_max = maxval(TUnit%numDT_r)
+    call mpi_allreduce(local_max, numDT_rMAX, 1, MPI_INTEGER, MPI_MAX, mpicom_rof, ier)
+    if (numDT_rMAX < 1) return
+
+    allocate(erout_sum(rtmCTL%begr:rtmCTL%endr), eroutno3_sum(rtmCTL%begr:rtmCTL%endr))
+    allocate(eb_gindex(nglob), eb_no3r(nglob), eb_erout(nglob), eb_eroutno3(nglob), eb_mr(nglob), eb_Ex(nglob))
+    allocate(gindex_task(nglob), no3r_task(nglob), erout_task(nglob), eroutno3_task(nglob))
+    allocate(wr_task(nglob), eb_wr(nglob), mr_task(nglob), Ex_task(nglob))
+    erout_sum = 0._r8
+    eroutno3_sum = 0._r8
+    localDeltaT = Tctl%DeltaT / Tctl%DLevelH2R / numDT_rMAX
+
+    do k = 1, numDT_rMAX
+       eb_gindex = 0
+       eb_no3r = 0._r8
+       eb_erout = 0._r8
+       eb_eroutno3 = 0._r8
+       eb_mr = 0._r8
+       eb_Ex = 0._r8
+       gindex_task = 0
+       no3r_task = 0._r8
+       erout_task = 0._r8
+       eroutno3_task = 0._r8
+       wr_task = 0._r8
+       mr_task = 0._r8
+       Ex_task = 0._r8
+
+       do iunit = rtmCTL%begr, rtmCTL%endr
+          gindex_task(iunit) = rtmCTL%gindex(iunit)
+          no3r_task(rtmCTL%gindex(iunit)) = TRunoff%no3r(iunit)
+          erout_task(rtmCTL%gindex(iunit)) = TRunoff%erout(iunit,1)
+          eroutno3_task(rtmCTL%gindex(iunit)) = TRunoff%eroutno3(iunit)
+          mr_task(rtmCTL%gindex(iunit)) = TRunoff%mr(iunit,1)
+          wr_task(rtmCTL%gindex(iunit)) = TRunoff%wr(iunit,1)
+          Ex_task(rtmCTL%gindex(iunit)) = LongiDisper(TRunoff%vr(iunit,1), TUnit%nr(iunit), &
+               TUnit%rwidth(iunit), TRunoff%yr(iunit,1), TRunoff%rr(iunit,1))
+       end do
+
+       call mpi_allreduce(gindex_task, eb_gindex, nglob, MPI_INTEGER, MPI_SUM, mpicom_rof, ier)
+       call mpi_allreduce(no3r_task, eb_no3r, nglob, MPI_REAL8, MPI_SUM, mpicom_rof, ier)
+       call mpi_allreduce(erout_task, eb_erout, nglob, MPI_REAL8, MPI_SUM, mpicom_rof, ier)
+       call mpi_allreduce(eroutno3_task, eb_eroutno3, nglob, MPI_REAL8, MPI_SUM, mpicom_rof, ier)
+       call mpi_allreduce(mr_task, eb_mr, nglob, MPI_REAL8, MPI_SUM, mpicom_rof, ier)
+       call mpi_allreduce(wr_task, eb_wr, nglob, MPI_REAL8, MPI_SUM, mpicom_rof, ier)
+       call mpi_allreduce(Ex_task, eb_Ex, nglob, MPI_REAL8, MPI_SUM, mpicom_rof, ier)
+
+       do iunit = rtmCTL%begr, rtmCTL%endr
+          if (TUnit%nUp(iunit) > 0) then
+             temp_flow = 0._r8
+             do kk = 1, TUnit%nUp(iunit)
+                unitUp = TUnit%iUp(iunit,kk)
+                if (unitUp > 0 .and. unitUp <= nglob) then
+                   if (eb_gindex(unitUp) > 0) temp_flow(kk) = eb_wr(eb_gindex(unitUp))
+                end if
+             end do
+             maxloc_up = maxloc(temp_flow(1:TUnit%nUp(iunit)), dim=1)
+             TUnit%maxUp(iunit) = TUnit%iUp(iunit, maxloc_up)
+          end if
+       end do
+
+       do iunit = rtmCTL%begr, rtmCTL%endr
+          if (TUnit%mask(iunit) > 0) then
+             call mainchannelRouting(iunit, 1, localDeltaT)
+             TRunoff%wr(iunit,1) = TRunoff%wr(iunit,1) + TRunoff%dwr(iunit,1) * localDeltaT
+             TRunoff%no3r(iunit) = TRunoff%no3r(iunit) + TRunoff%dno3r(iunit) * localDeltaT
+             call UpdateState_mainchannel(iunit, 1)
+             erout_sum(iunit) = erout_sum(iunit) + TRunoff%erout(iunit,1)
+             eroutno3_sum(iunit) = eroutno3_sum(iunit) + TRunoff%eroutno3(iunit)
+          end if
+       end do
+    end do
+
+    do iunit = rtmCTL%begr, rtmCTL%endr
+       if (TUnit%mask(iunit) > 0) then
+          temp_erout = erout_sum(iunit) / numDT_rMAX
+          temp_eroutno3 = eroutno3_sum(iunit) / numDT_rMAX
+          TRunoff%erout(iunit,1) = temp_erout
+          TRunoff%eroutno3(iunit) = temp_eroutno3
+          TRunoff%flow(iunit,1) = TRunoff%flow(iunit,1) - temp_erout
+          TRunoff%flowno3(iunit) = TRunoff%flowno3(iunit) - temp_eroutno3
+       end if
+    end do
+
+    deallocate(erout_sum, eroutno3_sum)
+    deallocate(eb_gindex, eb_no3r, eb_erout, eb_eroutno3, eb_mr, eb_Ex)
+    deallocate(gindex_task, no3r_task, erout_task, eroutno3_task, wr_task, eb_wr, mr_task, Ex_task)
+
+  end subroutine channel_explicit_backward
+
+!-----------------------------------------------------------------------
+
+  subroutine explicit_backward_dno3r(iunit, nt, theDeltaT)
+
+    integer, intent(in) :: iunit, nt
+    real(r8), intent(in) :: theDeltaT
+    integer :: unitUp, gindexUp
+    real(r8) :: temp_Ex, conc, temp_vfden, temp_rctn2
+    real(r8) :: temp_advctn, temp_diffsn, sinksource
+    real(r8) :: alpha, beta, gamma, rctnDecay, rctden
+
+    unitUp = TUnit%maxUp(iunit)
+    if (TRunoff%wr(iunit,nt) > 0._r8 .and. TUnit%rlen(iunit) > 0._r8 .and. &
+        TUnit%dnID(iunit) > 0 .and. TUnit%nUp(iunit) > 0 .and. unitUp > 0 .and. &
+        TRunoff%yr(iunit,nt) > 0._r8) then
+       gindexUp = 0
+       if (unitUp <= size(eb_gindex)) gindexUp = eb_gindex(unitUp)
+       if (gindexUp < 1 .or. rtmCTL%dsig(iunit) < 1 .or. rtmCTL%dsig(iunit) > size(eb_no3r)) then
+          TRunoff%dno3r(iunit) = TRunoff%erlateralno3(iunit) + TRunoff%erinno3(iunit) + TRunoff%eroutno3(iunit)
+       else
+          temp_Ex = LongiDisper(TRunoff%vr(iunit,nt), TUnit%nr(iunit), TUnit%rwidth(iunit), &
+               TRunoff%yr(iunit,nt), TRunoff%rr(iunit,nt))
+          if (TRunoff%no3r(iunit) > 0._r8) then
+             conc = (TRunoff%no3r(iunit) / TRunoff%wr(iunit,nt)) * 1000._r8
+             temp_vfden = 0.01_r8 * (10._r8**(-0.493_r8*log10(conc) - 2.975_r8))
+          else
+             temp_vfden = 0._r8
+          end if
+          temp_rctn2 = temp_vfden / TRunoff%yr(iunit,nt)
+          temp_advctn = (-eb_erout(gindexUp)*eb_no3r(gindexUp) + TRunoff%erout(iunit,nt)*TRunoff%no3r(iunit)) &
+               / TRunoff%wr(iunit,nt)
+          temp_diffsn = (TRunoff%mr(iunit,nt)*temp_Ex) * (eb_no3r(rtmCTL%dsig(iunit)) - TRunoff%no3r(iunit)) &
+               / TRunoff%wr(iunit,nt) / TUnit%rlen(iunit) + &
+               (eb_mr(gindexUp)*eb_Ex(gindexUp)) * (eb_no3r(gindexUp) - TRunoff%no3r(iunit)) &
+               / TRunoff%wr(iunit,nt) / TUnit%rlen(iunit)
+          sinksource = -TRunoff%eroutno3Up(iunit) + eb_eroutno3(gindexUp)
+          alpha = (eb_erout(gindexUp) - TRunoff%erout(iunit,nt)) / TRunoff%wr(iunit,nt)
+          beta  = (TRunoff%mr(iunit,nt)*temp_Ex + eb_mr(gindexUp)*eb_Ex(gindexUp)) &
+               / TRunoff%wr(iunit,nt) / TUnit%rlen(iunit)
+          gamma = (-eb_erout(gindexUp) - TRunoff%erout(iunit,nt)) / 2._r8 / TRunoff%wr(iunit,nt)
+          rctnDecay = temp_rctn2
+          if (alpha >= 0._r8) rctnDecay = min(temp_rctn2, alpha)
+          rctden = min(rctnDecay * TRunoff%no3r(iunit), &
+               TRunoff%no3r(iunit)/theDeltaT + (TRunoff%erlateralno3(iunit) + temp_advctn + sinksource + temp_diffsn))
+          TRunoff%dno3r(iunit) = TRunoff%erlateralno3(iunit) + temp_advctn + sinksource + temp_diffsn - rctden
+          rtmCTL%nTstep(iunit) = rtmCTL%nTstep(iunit) + 1
+          if ((rctnDecay > alpha) .or. (theDeltaT > 1._r8/(beta + gamma + temp_rctn2/2._r8))) then
+             rtmCTL%nInstable(iunit) = rtmCTL%nInstable(iunit) + 1
+          end if
+          if (temp_Ex > 0._r8) then
+             if ((TUnit%rlen(iunit)**2._r8 / 2._r8 / temp_Ex) < theDeltaT) then
+                write(iulog,*) 'mosart: Stability Issue in main channel NO3: DT>DX^2/2Ex', iunit, nt
+             end if
+          end if
+       end if
+    else
+       TRunoff%dno3r(iunit) = TRunoff%erlateralno3(iunit) + TRunoff%erinno3(iunit) + TRunoff%eroutno3(iunit)
+    end if
+
+  end subroutine explicit_backward_dno3r
+
+!-----------------------------------------------------------------------
+
+  function LongiDisper(U_, n_, B_, H_, rr_) result(Kx_)
+  ! Channel longitudinal dispersion from Deng et al. (2001), m2/s.
+
+    real(r8), intent(in) :: U_, n_, B_, H_, rr_
+    real(r8) :: Kx_
+    real(r8) :: eps_t0, u_star
+
+    if (U_ == 0._r8 .or. H_ == 0._r8 .or. rr_ <= 0._r8) then
+       Kx_ = 0._r8
+    else
+       u_star = U_ * n_ * sqrt(9.807_r8 * rr_**(-1._r8/3._r8))
+       eps_t0 = 0.145_r8 + (1._r8/3520._r8)*(U_/u_star)*((B_/H_)**1.38_r8)
+       Kx_ = (0.15_r8/8._r8/eps_t0) * ((B_/H_)**(5._r8/3._r8)) * ((U_/u_star)**2._r8) * H_ * u_star
+    end if
+
+  end function LongiDisper
 
 !-----------------------------------------------------------------------
 

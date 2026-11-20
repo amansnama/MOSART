@@ -74,6 +74,14 @@ contains
          avgflag='A', long_name='MOSART sub-network NO3 storage', &
          ptr_rof=rtmCTL%no3t, default='inactive')
 
+    call RtmHistAddfld (fname='NO3_Instability_Ratio', units='1', &
+         avgflag='A', long_name='Fraction of explicitBakward channel substeps that fail the stability test', &
+         ptr_rof=rtmCTL%nInstableRatio, default='inactive')
+
+    call RtmHistAddfld (fname='NO3_Concentration_Rate', units='gN/s', &
+         avgflag='A', long_name='NO3 discharge on land', &
+         ptr_rof=rtmCTL%no3_dislnd, default='inactive')
+
     call RtmHistAddfld (fname='RIVER_DISCHARGE_OVER_LAND'//'_'//trim(rtm_tracers(2)), units='m3/s',  &
          avgflag='A', long_name='MOSART river basin flow: '//trim(rtm_tracers(2)), &
          ptr_rof=rtmCTL%runofflnd_nt2, default='active')
@@ -177,6 +185,7 @@ contains
     ! Set mosart history fields as 1d poitner arrays
     !
     implicit none
+    integer :: iunit
     !-----------------------------------------------------------------------
 
     ! Currently only have two tracers
@@ -211,6 +220,12 @@ contains
 
     rtmCTL%qgwl_nt1(:)       = rtmCTL%qgwl(:,1)
     rtmCTL%qgwl_nt2(:)       = rtmCTL%qgwl(:,2)
+
+    do iunit = rtmCTL%begr, rtmCTL%endr
+       if (rtmCTL%nTstep(iunit) > 0) then
+          rtmCTL%nInstableRatio(iunit) = real(rtmCTL%nInstable(iunit), r8) / real(rtmCTL%nTstep(iunit), r8)
+       end if
+    end do
 
   end subroutine RtmHistFldsSet
 
