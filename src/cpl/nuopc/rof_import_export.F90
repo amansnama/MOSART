@@ -579,7 +579,7 @@ contains
   end subroutine fldlist_realize
 
   !===============================================================================
-  subroutine state_getimport(state, fldname, begr, endr, area, output, do_area_correction, rc)
+  subroutine state_getimport(state, fldname, begr, endr, area, output, do_area_correction, rc, unit_scale)
 
     ! ----------------------------------------------
     ! Map import state field to output array
